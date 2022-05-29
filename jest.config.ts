@@ -1,3 +1,4 @@
+/* eslint-disable */
 const config = {
   displayName: 'ooxast-util-remove-rsid',
   preset: '../../../jest.preset.js',
