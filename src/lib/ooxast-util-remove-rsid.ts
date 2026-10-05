@@ -1,9 +1,15 @@
-import { visit, remove } from 'misc'
 import { Text, Root, Node, P, R } from 'ooxast'
 import { convertElement, isElement } from 'xast-util-is-element'
 import { select } from 'xast-util-select'
-import { removePosition } from 'unist-util-remove-position'
-import { select as unistSelect } from 'unist-util-select'
+import { getRStyle } from 'ooxast-util-get-style'
+import { visit as unistVisit } from 'unist-util-visit'
+import { remove as unistRemove } from 'unist-util-remove'
+
+/**
+ * these cause too deep type instantiations
+ */
+const visit = unistVisit as any
+const remove = unistRemove as any
 
 // Check to see if node is a paragraph, because we want to merge elements in a paragraph
 const isP = convertElement<P>('w:p')
@@ -15,16 +21,17 @@ export interface Options {
 
 export function ooxastUtilRemoveRsid(tree: Root, options?: Options): Root
 export function ooxastUtilRemoveRsid(tree: Node, options?: Options): Node
-export function ooxastUtilRemoveRsid(
-  tree: Root | Node,
-  options?: Options
-): Root | Node {
+export function ooxastUtilRemoveRsid(tree: Root | Node, options?: Options): Root | Node {
   visit(tree, isP, (node: P) => {
     // Clean rsid props from P
     const {
-      'w:rsidR': rr,
-      'w:rsidRPr': rpr,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      'w:rsidR': _rr,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      'w:rsidRPr': _rpr,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       'w:rsidRDefault': rd,
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       'w:rsidP': rp,
       ...rest
     } = node.attributes
@@ -45,7 +52,7 @@ export function ooxastUtilRemoveRsid(
 
       el = maybeRemoveRunProperties(el, options?.rPrRemoveList)
 
-      if (lastEl?.name !== 'w:r') {
+      if (!isR(lastEl)) {
         runs.push(el)
         continue
       }
@@ -58,30 +65,28 @@ export function ooxastUtilRemoveRsid(
         continue
       }
 
-      const pr = select('w\\:rPr', el)
-      const lastRPr = select('w\\:rPr', lastEl)
+      const pr = getRStyle(el)
+      const lastRPr = getRStyle(lastEl)
       //null case
       if (!lastRPr && !pr) {
         lastEl = merge(lastEl, el)
         continue
       }
 
-      // one of them has props while the other doesn't, don't merge
-      // TODO: remove unnecssary properties first, that way this will equal more often
-      if ((!lastRPr && pr) || (lastRPr && !pr)) {
+      if (JSON.stringify(lastRPr) !== JSON.stringify(pr)) {
         runs.push(el)
         continue
       }
 
+      // // one of them has props while the other doesn't, don't merge
+      // // TODO: remove unnecssary properties first, that way this will equal more often
+      // if ((!lastRPr && pr) || (lastRPr && !pr)) {
+      //   runs.push(el)
+      //   continue
+      // }
+
       // they both have properties but they differ, e.g. one is italic, the other bold. Should not merge
       // string check otherwise === don't work
-      if (
-        JSON.stringify(removePosition(lastRPr!, true)) !==
-        JSON.stringify(removePosition(pr!, true))
-      ) {
-        runs.push(el)
-        continue
-      }
 
       lastEl = merge(lastEl, el)
     }
@@ -98,33 +103,37 @@ function maybeRemoveRunProperties(r: R, options: string[] | undefined): R {
 
   remove(
     r,
-    (element: R['children'][number]) =>
-      isElement(element) && options.includes(element.name)
+    (element: R['children'][number]) => isElement(element) && options.includes(element.name),
   )
   return r
 }
 
 /**
- * Merge two runs into an old one by concatenating the text properties.
- * If they don't have text, don't merge them.
+ * Merge a run into the previous one: the text of the first `w:t` of `curr` is appended to the
+ * last `w:t` of `prev`, everything else (more text, breaks, tabs) is appended after it, so
+ * that nothing is lost and the order is kept.
  */
 function merge(prev: R, curr: R): R {
-  const lastText = unistSelect('text', prev) as Text
-  const text = unistSelect('text', curr) as Text
+  const extra = curr.children.filter((c) => !(isElement(c) && c.name === 'w:rPr'))
+  const last = prev.children[prev.children.length - 1]
+  const first = extra[0]
 
-  if (!lastText) {
-    return curr
+  if (isElement(last) && last.name === 'w:t' && isElement(first) && first.name === 'w:t') {
+    const lastText = last.children[0] as Text | undefined
+    const text = first.children[0] as Text | undefined
+    if (lastText?.type === 'text' && text?.type === 'text') {
+      lastText.value += text.value
+      last.attributes = { ...last.attributes, 'xml:space': 'preserve' } as typeof last.attributes
+      extra.shift()
+    }
   }
 
-  if (!text) {
-    return prev
-  }
-
-  lastText.value += text.value
+  prev.children.push(...(extra as R['children']))
   return prev
 }
 
 function removeRsid(node: R): R {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { 'w:rsidRPr': rp, 'w:rsidR': r, ...rest } = node.attributes
   node.attributes = rest as any
   return node
